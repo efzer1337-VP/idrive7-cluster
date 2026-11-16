@@ -1,0 +1,55 @@
+# Cluster — кастомная приборка для BMW iDrive 7 (MGU)
+
+Приложение **Cluster** (`owner_cluster_control`) для головного устройства BMW iDrive 7 (MGU):
+центральная область приборки с настраиваемыми виджетами — шины (TPMS), двигатель,
+ускорение 0–100, «сейчас играет», карта CarPlay — со встроенным редактором композиции
+(добавление, перемещение, изменение размера, удаление виджетов, сохранение после перезапуска).
+
+Приложение собрано на базе [idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps)
+(Kit MIT) и предназначено для установки через **MGU Store**.
+
+## Установка через MGU Store (на автомобиле)
+
+1. Откройте **Store** на головном устройстве.
+2. **Settings → Add source**, укажите репозиторий: `efzer1337-VP/idrive7-cluster`
+3. Выберите канал **branch** (ветка `main`).
+4. В списке появится **Cluster** → **Install**. Магазин сам скачает исходники,
+   соберёт приложение прямо на устройстве (Python-сборка, ~1 минута) и установит его.
+5. Плитка появится в **Apps**.
+
+Требования:
+
+- Головное устройство iDrive 7 (MGU) с установленным [MGU Store](https://github.com/robertnisipeanu/mgu-store).
+- GPU-рендерер Store (`mgu-render`) — ставится требованием автоматически.
+- Русская локаль зашита в сборку (`--language ru`, атлас кириллицы).
+
+## Обновления
+
+Любой новый коммит в `main` — новая ревизия источника: в Store появится
+обновление (версия приложения меняется в `apps/owner_cluster_control/app.json`).
+
+## Сборка локально (проверка)
+
+```bash
+python3 kit/tools/build.py --preview-only --language ru owner_cluster_control
+node kit/tools/preview.js dist/owner_cluster_control preview/check render
+```
+
+Полная (установочная) сборка требует BMW oap-sdk, извлечённого из **своего**
+устройства (`kit/tools/extract_sdk.js`); SDK BMW не входит в этот репозиторий
+и не подлежит распространению. В автомобиле сборка происходит на самом устройстве —
+SDK ему не нужен.
+
+## Структура
+
+```
+apps/owner_cluster_control/   приложение (app.json + JS)
+kit/runtime/                  рантайм кита (canvas, gauges, car, шрифты)
+kit/tools/                    build.py и помощники сборки
+mgu-repo.json                 манифест источника для MGU Store
+```
+
+## Лицензии
+
+Код приложения и кита — MIT (см. `LICENSE`). Не распространяется: BMW oap-sdk
+(извлекается только из своего устройства).

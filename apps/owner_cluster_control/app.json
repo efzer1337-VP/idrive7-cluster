@@ -1,0 +1,12 @@
+{
+  "id": "owner_cluster_control",
+  "title": "Cluster",
+  "description": "Кастомная приборка: центральная область с виджетами (шины, двигатель, 0–100, музыка, карта) и редактором композиции",
+  "version": "0.2.0",
+  "vendor": "owner",
+  "loggingId": "OCLP",
+  "mguHmi": ["ID7"],
+  "screens": [{"name": "MAIN", "kind": "canvas", "title": "Cluster", "buttons": [["BTN_SETTINGS", "Settings"]]}],
+  "signals": {"de.bmw.infotainment.vehicle.Vehicle2": {"statusVehiclePartType": "rs"}},
+  "settings": [{"key": "centre", "label": "Центральная область", "type": "choice", "default": "tyres", "options": [["tyres", "Шины"], ["engine", "Двигатель"], ["acceleration", "0–100"], ["music", "Сейчас играет"], ["map", "Карта CarPlay"]]}]
+}
