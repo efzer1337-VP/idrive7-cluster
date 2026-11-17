@@ -75,12 +75,59 @@ const DEMO = {
 };
 const fmt = (v, d) => (typeof v === 'number' ? v.toFixed(d || 0) : '--');
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+/**
+ * Danger bands per indicator: the range where the value means something is wrong with the car.
+ * `hi` = above this is dangerous, `lo` = below this is dangerous, both present = a safe window
+ * with danger on either side. Values are in the indicator's own unit, from the workshop data
+ * these signals come from: coolant and oil overheat, oil pressure/level collapse, tyre pressure
+ * drifts from spec, battery stops charging, brake/steering signals saturate.
+ */
+const DANGER = {
+    coolant: { hi: 115, lo: 40, label: 'ПЕРЕГРЕВ' },
+    oil: { hi: 130, lo: 20, label: 'ПЕРЕГРЕВ МАСЛА' },
+    gearboxTemp: { hi: 120, lo: -10, label: 'ПЕРЕГРЕВ КОРОБКИ' },
+    oilLevel: { lo: 1, label: 'НИЗКИЙ УРОВЕНЬ' },
+    battery: { lo: 30, label: 'НИЗКИЙ ЗАРЯД' },
+    voltage: { lo: 11.8, hi: 15.0, label: 'СЕТЬ' },
+    fuel: { lo: 6, label: 'МАЛО ТОПЛИВА' },
+    range: { lo: 30, label: 'МАЛО ЗАПАСА' },
+    p_fl: { lo: 1.9, hi: 3.2, label: 'ДАВЛЕНИЕ' },
+    p_fr: { lo: 1.9, hi: 3.2, label: 'ДАВЛЕНИЕ' },
+    p_rl: { lo: 1.9, hi: 3.2, label: 'ДАВЛЕНИЕ' },
+    p_rr: { lo: 1.9, hi: 3.2, label: 'ДАВЛЕНИЕ' },
+    t_fl: { hi: 85, label: 'ПЕРЕГРЕВ ШИНЫ' },
+    t_fr: { hi: 85, label: 'ПЕРЕГРЕВ ШИНЫ' },
+    t_rl: { hi: 85, label: 'ПЕРЕГРЕВ ШИНЫ' },
+    t_rr: { hi: 85, label: 'ПЕРЕГРЕВ ШИНЫ' },
+    rpm: { hi: 7200, label: 'ПЕРЕКРУТ' },
+    torque: { hi: 620, label: 'ПЕРЕГРУЗ' },
+    power: { hi: 320, label: 'ПЕРЕГРУЗ' },
+    boost: { hi: 2.6, label: 'ПЕРЕДУВ' },
+    g_long: { hi: 1.2, lo: -1.4, label: 'ПЕРЕГРУЗКА' },
+    g_lat: { hi: 1.3, lo: -1.3, label: 'СНОС' },
+    steer: { hi: 500, lo: -500, label: 'УГОЛ РУЛЯ' },
+    yaw: { hi: 45, lo: -45, label: 'ВРАЩЕНИЕ' },
+    slope: { hi: 25, lo: -25, label: 'УКЛОН' },
+    consumption: { hi: 35, label: 'РАСХОД' },
+    fuelFlow: { hi: 45, label: 'РАСХОД' },
+};
+/** Which side of the band a value crossed: 'hi', 'lo' or null. */
+function dangerOf(id, value) {
+    const band = DANGER[id];
+    if (!band || typeof value !== 'number' || !isFinite(value)) return null;
+    if (band.hi !== undefined && value > band.hi) return { side: 'hi', label: band.label };
+    if (band.lo !== undefined && value < band.lo) return { side: 'lo', label: band.label };
+    return null;
+}
+/** A blink phase from the clock: 0.5 Hz, so the flash reads as a warning and not a strobe. */
+function blinkOn(now) { return Math.floor((now === undefined ? Date.now() : now) / 520) % 2 === 0; }
 // Charts show a rolling 3-minute window (not a live flicker): keep samples within the last 180s.
 const HISTORY_MINUTES = 3;
 
 // Optional sixth argument: profile string, {profile}, or a provider function returning either.
 // Optional seventh argument: { now() } supplies this editor's demo clock in milliseconds.
-module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, demoOptions) {
+// Optional eighth argument: the live data layer (signals.js) - real car values win over demo.
+module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, demoOptions, live) {
     const demoNow = demoOptions && typeof demoOptions.now === 'function' ? demoOptions.now : Date.now;
     const demoHist = {};
     let readOnlyDraw = false;
@@ -116,20 +163,21 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
 
     // ---- Catalog ----
     const groupedCategories = [
-        { name: 'Основные', items: ['rpm', 'torque', 'power', 'gear', 'speed', 'accel', 'coolant', 'oil', 'tyres'], color: '#42a5f5' },
-        { name: 'Температуры', items: ['outside', 'gearboxTemp'], color: '#ef5350' },
-        { name: 'Движение', items: ['g_long', 'g_lat', 'steer', 'yaw', 'slope', 'braking'], color: '#66bb6a' },
-        { name: 'Топливо', items: ['fuel', 'range', 'consumption', 'odo', 'trip'], color: '#ffa726' },
-        { name: 'Электрика', items: ['voltage', 'battery'], color: '#ab47bc' },
-        { name: 'Медиа', items: ['track', 'artist', 'map', 'route'], color: '#26c6da' }
+        { name: 'Двигатель', items: ['rpm', 'torque', 'power', 'boost', 'gear', 'pedal', 'powerPct', 'torquePct', 'boostMax', 'engineState', 'oilLevel', 'startStop'] },
+        { name: 'Температуры', items: ['coolant', 'oil', 'outside', 'gearboxTemp'] },
+        { name: 'Шины', items: ['tyres', 'p_fl', 'p_fr', 'p_rl', 'p_rr', 't_fl', 't_fr', 't_rl', 't_rr'] },
+        { name: 'Движение', items: ['speed', 'accel', 'g_long', 'g_lat', 'steer', 'mode', 'yaw', 'slope', 'braking', 'handbrake'] },
+        { name: 'Топливо и поездка', items: ['fuel', 'range', 'consumption', 'odo', 'trip', 'avgCons1', 'avgSpeed1', 'tripTime', 'tripFuel', 'fuelFlow'] },
+        { name: 'Электросистема', items: ['voltage', 'battery'] },
+        { name: 'Медиа и навигация', items: ['track', 'artist', 'map', 'route'] }
     ];
     const addFlat = [];
     const _perWheel = /^[pt]_(fl|fr|rl|rr)$/;
-    M.categories.forEach(c => c.items.forEach(i => { if (!_perWheel.test(i[0])) addFlat.push({ id: i[0], name: i[1], unit: i[2] }); }));
+    M.categories.forEach(c => c.items.forEach(i => { if (!_perWheel.test(i[0])) addFlat.push({ id: i[0], name: i[1], unit: i[2], cat: c.name }); }));
     const selectFlat = [];
     groupedCategories.forEach(g => g.items.forEach(id => {
         const item = M.items[id];
-        if (item) selectFlat.push({ id, name: item.name, unit: item.unit, cat: g.name, color: g.color });
+        if (item) selectFlat.push({ id, name: item.name, unit: item.unit, cat: g.name });
     }));
     const PER_PAGE = 10;
 
@@ -297,9 +345,34 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
         const sx = b.x + b.w - sp - ((n - 1) * sp) / 2 - 6, sy = b.y + b.h / 2 - ((n - 1) * sp) / 2;
         for (let i = 0; i < n; i++) cv.roundRect(sx + i * sp, sy + i * sp, 6, 6, 2, i === (w.active || 0) ? color.accent : color.line);
     }
+    /**
+     * One widget value. The live car wins: when the data layer has a usable value for
+     * this id, that is what the widget shows and `demo` is false. The demo model is the
+     * fallback while no car answers, and it is labelled as such on the card.
+     */
     function demoValue(id) {
         const d = DEMO[id] || DEMO.speed;
         const now = demoNow();
+        const lv = live && typeof live.read === 'function' ? live.read(id) : null;
+        if (lv && lv.valid) {
+            const val = typeof lv.n === 'number' ? lv.n : null;
+            const arr = demoHist[id] || [];
+            if (!readOnlyDraw && val !== null) {
+                arr.push([now, val]);
+                const cutoff = now - HISTORY_MINUTES * 60 * 1000;
+                while (arr.length && arr[0][0] < cutoff) arr.shift();
+                demoHist[id] = arr;
+            }
+            return { d, val, vals: arr.map((h) => h[1]), live: true, text: lv.text, stale: !!lv.stale };
+        }
+        // No usable value from the car. With a data layer present that means the widget shows "--":
+        // inventing a number here would put a plausible-looking reading on the cluster that the
+        // car never sent. The demo model stays only for a host with no data layer at all (the
+        // layout tests) or when the driver explicitly turns demo data on in settings.
+        const demoAllowed = !live || (ctx.settings && typeof ctx.settings.get === 'function' && ctx.settings.get('demo') === 'on');
+        if (!demoAllowed) {
+            return { d, val: null, vals: (demoHist[id] || []).map((h) => h[1]), live: false, empty: true };
+        }
         const val = clamp(d.base + d.wobble * Math.sin(now / 1000 / (d.period || 5)), d.min, d.max);
         const arr = demoHist[id] || [];
         if (!readOnlyDraw) {
@@ -308,7 +381,7 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
             while (arr.length && arr[0][0] < cutoff) arr.shift();
             demoHist[id] = arr;
         }
-        return { d, val, vals: arr.map((h) => h[1]) };
+        return { d, val, vals: arr.map((h) => h[1]), live: false, demoModel: true };
     }
     // Values array for a history id (samples trimmed to the rolling 3-minute window).
     function histVals(id) { const arr = demoHist[id] || []; return arr.map((h) => h[1]); }
@@ -323,20 +396,42 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
         }
         return size;
     }
-    // One consistent metric card: label top-left, DEMO top-right, big value with the unit on the
-    // SAME baseline to its right, an optional level bar, an optional rolling sparkline and an
-    // optional min/max footer. Every band follows the one above it, so nothing ever overlaps.
+    // One consistent metric card: label top-left, big value with the unit on the SAME baseline to
+    // its right, an optional level bar, an optional rolling sparkline and an optional min/max
+    // footer. Every band follows the one above it, so nothing ever overlaps.
+    // A stopped feed is the only state worth marking on the card itself: a value the car stopped
+    // refreshing reads as current unless it says otherwise. Where the data came from is stated
+    // once, in the screen footer, not repeated on every widget.
+    function staleTag(dv) {
+        return dv && dv.live && dv.stale ? { text: 'НЕТ ОБНОВЛЕНИЯ', color: color.warn } : null;
+    }
     function _metricCard(cv, b, o) {
         const compact = o.compact, pad = compact ? 12 : 16;
         const x = b.x, y = b.y, W = b.w, H = b.h;
         const innerL = x + pad, innerR = x + W - pad, innerW = innerR - innerL;
-        const accent = o.accent || '#468bd4';
-        cv.roundRect(x + 2, y + 2, W - 4, H - 4, 10, '#0e141f');
-        cv.strokeRoundRect(x + 2.5, y + 2.5, W - 5, H - 5, 10, 1, '#26313e');
-        cv.fillRect(innerL, y + 3, innerW, 2, accent);
+        const danger = o.danger || null;
+        const flash = danger ? blinkOn(demoNow()) : false;
+        const accent = danger ? color.crit : (o.accent || '#468bd4');
+        // Danger repaints the whole card: a filled red wash on the blink phase and a solid red
+        // border always, so the state is visible even between flashes.
+        if (danger) {
+            cv.roundRect(x + 2, y + 2, W - 4, H - 4, 10, flash ? withAlpha(color.crit, 0.22) : '#0e141f');
+            cv.strokeRoundRect(x + 2.5, y + 2.5, W - 5, H - 5, 10, 2, color.crit);
+        } else {
+            cv.roundRect(x + 2, y + 2, W - 4, H - 4, 10, '#0e141f');
+            cv.strokeRoundRect(x + 2.5, y + 2.5, W - 5, H - 5, 10, 1, '#26313e');
+        }
+        // No decorative top rule: the label already names the card, and a coloured stripe on every
+        // card is the tell the antislop rules call out. Colour is spent only where it means state.
         const labY = y + (compact ? 20 : 25);
-        cv.text(o.label, innerL, labY, compact ? 10.5 : 12, color.muted, { font: 'bold', spacing: 1 });
-        cv.text('DEMO', innerR, labY, compact ? 9 : 10, color.muted, { align: 'right', font: 'bold' });
+        cv.text(o.label, innerL, labY, compact ? 10.5 : 12, danger ? color.crit : color.muted, { font: 'bold', spacing: 1 });
+        // Top-right: DANGER with its cause while the value is out of band, else a stale note.
+        if (danger) {
+            const t = flash ? 'DANGER' : (danger.label || 'DANGER');
+            cv.text(t, innerR, labY, compact ? 9 : 10, color.crit, { align: 'right', font: 'bold' });
+        } else if (o.tag) {
+            cv.text(o.tag.text, innerR, labY, compact ? 9 : 10, o.tag.color, { align: 'right', font: 'bold' });
+        }
         const maxV = compact ? 32 : Math.min(58, Math.max(38, H * 0.36));
         const minV = compact ? 18 : 24;
         const unit = o.unit || '', unitSize = compact ? 12 : 15;
@@ -377,13 +472,16 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
     function drawChart(cv, b, w) {
         const activePage = w.pages[w.active || 0]; if (!activePage || !activePage.length) return;
         const id = activePage[0], item = M.items[id]; if (!item) return;
-        const { d, val, vals } = demoValue(id);
+        const { d, val, vals, live: isLive, stale, text } = demoValue(id);
         const compact = b.h < 130;
         const unit = item.unit || d.unit || '';
         const frac = d.max > d.min ? (val - d.min) / (d.max - d.min) : 0;
         _metricCard(cv, b, {
-            label: itemLabel(id), value: fmt(val, d.dec), unit, dec: d.dec,
+            label: itemLabel(id), value: text !== undefined && text !== null ? text : fmt(val, d.dec), unit: text !== undefined ? '' : unit, dec: d.dec,
             frac, vals: compact ? null : vals, compact, accent: '#468bd4',
+            tag: staleTag({ live: isLive, stale }),
+            danger: isLive ? dangerOf(id, val) : null,
+            lo: d.min, hi: d.max, valueNum: val,
         });
     }
 
@@ -399,38 +497,40 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
         if (/^t_(fl|fr|rl|rr)$/.test(id)) return 'ТЕМП. ' + id.slice(2).toUpperCase();
         return i && i.name ? i.name.toUpperCase() : 'НЕИЗВЕСТНЫЙ ПОКАЗАТЕЛЬ';
     }
-    function drawDemoTag(cv, x, y, width) {
-        cv.text('DEMO', x + width - 8, y + 15, 11, color.muted, { align: 'right', font: 'bold' });
-    }
     function drawCard(cv, b, id, x, width, compact) {
         const item = M.items[id], known = !!(item && DEMO[id]);
         const state = STATE_ITEMS.has(id);
         const C = compact || b.h < 130;
         const pad = C ? 12 : 16;
+        const dv0 = state ? (live && typeof live.read === 'function' ? live.read(id) : null) : null;
+        const tag0 = staleTag(dv0 && dv0.valid ? { live: true, stale: dv0.stale } : { live: false });
         if (state) {
             cv.roundRect(b.x + 2, b.y + 2, b.w - 4, b.h - 4, 10, '#0e141f');
             cv.strokeRoundRect(b.x + 2.5, b.y + 2.5, b.w - 5, b.h - 5, 10, 1, '#26313e');
             cv.fillRect(b.x + pad, b.y + 3, b.w - 2 * pad, 2, color.accent);
             cv.text(itemLabel(id), b.x + pad, b.y + (C ? 20 : 25), C ? 10.5 : 12, color.muted, { font: 'bold', spacing: 1 });
-            cv.text('DEMO', b.x + b.w - pad, b.y + (C ? 20 : 25), C ? 9 : 10, color.muted, { align: 'right', font: 'bold' });
-            const stateNames = { gear: '5', engineState: 'READY', startStop: 'ON', mode: 'NORMAL', braking: 'OFF', handbrake: 'OFF', track: 'НЕТ ДАННЫХ', artist: 'НЕТ ДАННЫХ', map: 'НЕ ПОДКЛЮЧЕНА', route: 'НЕТ МАРШРУТА' };
-            const txt = known ? (stateNames[id] || '—') : '—';
+            if (tag0) cv.text(tag0.text, b.x + b.w - pad, b.y + (C ? 20 : 25), C ? 9 : 10, tag0.color, { align: 'right', font: 'bold' });
+            // A state value is a word from the car, never a stand-in: unknown stays unknown.
+            const txt = dv0 && dv0.valid ? (dv0.text !== undefined ? dv0.text : String(dv0.n)) : '--';
             const cy = b.y + b.h * 0.60;
             const pw = Math.min(b.w - 2 * pad, C ? 160 : 220), ph = C ? 26 : 34;
             cv.roundRect(b.x + (b.w - pw) / 2, cy - ph / 2, pw, ph, 8, color.selected);
-            cv.text(txt, b.x + b.w / 2, cy + (C ? 6 : 8), C ? 15 : 19, color.accent, { align: 'center', font: 'bold' });
+            fit(cv, txt, b.x + b.w / 2, cy + (C ? 6 : 8), C ? 15 : 19, pw - 12, { align: 'center', font: 'bold', color: dv0 && dv0.valid ? color.accent : color.muted });
             return;
         }
         const dv = known ? demoValue(id) : null;
         const raw = dv ? dv.val : null;
         const dm = known ? DEMO[id] : null;
         const frac = (dm && raw != null && dm.max > dm.min) ? Math.max(0, Math.min(1, (raw - dm.min) / (dm.max - dm.min))) : null;
+        const tag = staleTag(dv);
         _metricCard(cv, b, {
             label: itemLabel(id),
-            value: known ? fmt(raw, dm.dec) : '--',
-            unit: known ? (dm.unit || item.unit || '') : '',
+            value: dv && dv.text !== undefined && dv.text !== null ? dv.text : (known && raw != null ? fmt(raw, dm.dec) : '--'),
+            unit: dv && dv.text !== undefined ? '' : (known ? (dm.unit || item.unit || '') : ''),
             dec: known ? dm.dec : 0,
-            frac, vals: null, compact: C, accent: color.accent,
+            frac, vals: null, compact: C, accent: color.accent, tag,
+            danger: dv && dv.live ? dangerOf(id, raw) : null,
+            lo: dm ? dm.min : undefined, hi: dm ? dm.max : undefined, valueNum: raw,
         });
     }
     function drawTemperature(cv, b, id) {
@@ -445,15 +545,21 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
             cv.roundRect(x + 2, y + 2, W - 4, H - 4, 10, '#0e141f');
             cv.strokeRoundRect(x + 2.5, y + 2.5, W - 5, H - 5, 10, 1, '#26313e');
             cv.fillRect(x + pad, y + 3, W - 2 * pad, 2, color.accent);
-            cv.text(itemLabel(id), x + pad, y + 20, 10.5, color.muted, { font: 'bold', spacing: 1 });
-            cv.text('DEMO', x + W - pad, y + 20, 9, color.quiet || color.muted, { align: 'right', font: 'bold' });
+            const dvC = demoValue(id);
+            const dgrC = dvC.live ? dangerOf(id, dvC.val) : null;
+            const flashC = dgrC ? blinkOn(demoNow()) : false;
+            if (dgrC) cv.strokeRoundRect(x + 2.5, y + 2.5, W - 5, H - 5, 10, 2, color.crit);
+            cv.text(itemLabel(id), x + pad, y + 20, 10.5, dgrC ? color.crit : color.muted, { font: 'bold', spacing: 1 });
+            const tagC = staleTag(dvC);
+            if (dgrC) cv.text(flashC ? 'DANGER' : (dgrC.label || 'DANGER'), x + W - pad, y + 20, 9, color.crit, { align: 'right', font: 'bold' });
+            else if (tagC) cv.text(tagC.text, x + W - pad, y + 20, 9, tagC.color, { align: 'right', font: 'bold' });
             if (!known || val == null) { cv.text('--', x + W / 2, y + H * 0.62, 24, color.muted, { align: 'center', font: 'cluster-m' }); return; }
             // compact dial: small 270-degree ring on the left, value + unit to its right (SOC/SOH echo)
             const frac = d.max > d.min ? Math.max(0, Math.min(1, (val - d.min) / (d.max - d.min))) : 0;
             const R = Math.min(H * 0.30, 30), th = Math.max(6, R * 0.22);
             const cx = x + pad + R, cy = y + H * 0.60;
             cv.arc(cx, cy, R - th, R, -135, 135, '#26313e', { round: true });
-            if (frac > 0.002) cv.arc(cx, cy, R - th, R, -135, -135 + frac * 270, color.accent, { round: true });
+            if (frac > 0.002) cv.arc(cx, cy, R - th, R, -135, -135 + frac * 270, dgrC ? color.crit : color.accent, { round: true });
             const vSize = Math.min(34, Math.round(H * 0.42)), vStr = fmt(val, d.dec);
             const vx = cx + R + 12, vBase = cy + vSize * 0.30;
             cv.text(vStr, vx, vBase, vSize, color.white, { font: 'cluster-m' });
@@ -463,23 +569,47 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
             return;
         }
         const pad = 16;
-        cv.roundRect(b.x + 2, b.y + 2, W - 4, H - 4, 10, '#0e141f');
-        cv.strokeRoundRect(b.x + 2.5, b.y + 2.5, W - 5, H - 5, 10, 1, '#26313e');
-        cv.fillRect(b.x + pad, b.y + 3, W - 2 * pad, 2, color.accent);
-        cv.text(itemLabel(id), b.x + pad, b.y + 25, 12, color.muted, { font: 'bold', spacing: 1 });
-        cv.text('DEMO', b.x + W - pad, b.y + 25, 10, color.muted, { align: 'right', font: 'bold' });
-        const { d: dd, val } = demoValue(id);
+        const { d: dd, val, live: ringLive, stale: ringStale } = demoValue(id);
+        const dgrR = ringLive ? dangerOf(id, val) : null;
+        const flashR = dgrR ? blinkOn(demoNow()) : false;
+        cv.roundRect(b.x + 2, b.y + 2, W - 4, H - 4, 10, dgrR && flashR ? withAlpha(color.crit, 0.22) : '#0e141f');
+        cv.strokeRoundRect(b.x + 2.5, b.y + 2.5, W - 5, H - 5, 10, dgrR ? 2 : 1, dgrR ? color.crit : '#26313e');
+        cv.fillRect(b.x + pad, b.y + 3, W - 2 * pad, 2, dgrR ? color.crit : color.accent);
+        cv.text(itemLabel(id), b.x + pad, b.y + 25, 12, dgrR ? color.crit : color.muted, { font: 'bold', spacing: 1 });
+        const tagRing = staleTag({ live: ringLive, stale: ringStale });
+        if (dgrR) cv.text(flashR ? 'DANGER' : (dgrR.label || 'DANGER'), b.x + W - pad, b.y + 25, 10, color.crit, { align: 'right', font: 'bold' });
+        else if (tagRing) cv.text(tagRing.text, b.x + W - pad, b.y + 25, 10, tagRing.color, { align: 'right', font: 'bold' });
         const frac = Math.max(0, Math.min(1, (val - dd.min) / (dd.max - dd.min)));
-        // SOC/SOH style ring: 270-degree donut with round caps, value centred inside.
-        const cx = b.x + W / 2, cy = b.y + H * 0.55;
-        const R = Math.min(W * 0.32, H * 0.30, 96);
-        const th = Math.max(9, R * 0.16);
-        cv.arc(cx, cy, R - th, R, -135, 135, '#26313e', { round: true });
-        if (frac > 0.002) cv.arc(cx, cy, R - th, R, -135, -135 + frac * 270, color.accent, { round: true });
-        cv.text(fmt(val, dd.dec), cx, cy + R * 0.16, Math.round(R * 0.60), color.white, { align: 'center', font: 'cluster-m' });
-        cv.text(dd.unit || item.unit || '', cx, cy + R * 0.62, Math.round(R * 0.17), color.muted, { align: 'center' });
-        cv.text('мин ' + fmt(dd.min, dd.dec), b.x + pad, b.y + H - 9, 10, color.muted);
-        cv.text('макс ' + fmt(dd.max, dd.dec), b.x + W - pad, b.y + H - 9, 10, color.muted, { align: 'right' });
+        // Ring per the reference: a 300° sweep with the gap at the BOTTOM, a thicker stroke, faint
+        // ticks outside it, and the value centred with the unit under it. The gap at the bottom
+        // keeps the open side away from the label, so the dial reads as a gauge, not a donut.
+        const cx = b.x + W / 2, cy = b.y + H * 0.50;
+        const R = Math.min(W * 0.38, H * 0.32, 118);
+        const th = Math.max(11, R * 0.20);
+        const A0 = -150, SWEEP = 300;              // start lower-left, sweep over the top to lower-right
+        const ringTint = dgrR ? color.crit : color.accent;
+        // The track runs the full sweep first; the ticks then sit just outside it, so a tick never
+        // floats where there is no track under it.
+        cv.arc(cx, cy, R - th, R, A0, A0 + SWEEP, '#1b2430', { round: true });
+        // Outer ticks: 30 marks, longer every fifth, tinted up to the value.
+        for (let i = 0; i <= 30; i++) {
+            const a = (A0 + SWEEP * (i / 30)) * Math.PI / 180;
+            const major = i % 5 === 0;
+            const r0 = R + 3, r1 = R + (major ? 9 : 6);
+            const on = i / 30 <= frac + 1e-6;
+            cv.line(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0, cx + Math.sin(a) * r1, cy - Math.cos(a) * r1,
+                major ? 1.6 : 1, withAlpha(on ? ringTint : color.muted, on ? 0.8 : 0.28));
+        }
+        if (frac > 0.002) cv.arc(cx, cy, R - th, R, A0, A0 + SWEEP * frac, ringTint, { round: true });
+        // Value centred in the ring, unit directly under it: the reference's hierarchy.
+        const vSize = Math.round(R * 0.54);
+        cv.text(fmt(val, dd.dec), cx, cy + vSize * 0.30, vSize, dgrR ? color.crit : color.white, { align: 'center', font: 'cluster-m' });
+        cv.text(dd.unit || item.unit || '', cx, cy + R * 0.66, Math.round(R * 0.18), dgrR ? color.crit : color.muted, { align: 'center' });
+        // Scale ends sit on the ring's own gap, not in the card corners: they label the sweep.
+        const gapA = (A0 + 360) * Math.PI / 180;
+        const gy = cy + Math.cos((A0 + SWEEP / 2) * Math.PI / 180) * 0 + R * 0.92;
+        cv.text(fmt(dd.min, dd.dec), cx - R * 0.62, gy, 10, color.muted, { align: 'center' });
+        cv.text(fmt(dd.max, dd.dec), cx + R * 0.62, gy, 10, color.muted, { align: 'center' });
     }
     function drawNumberWithUnit(cv, value, unit, centerX, y, size, valueColor, unitColor, unitSize, align) {
         const valueWidth = cv.textWidth ? cv.textWidth(value, size, { font: 'cluster-m' }) : value.length * size * 0.62;
@@ -494,14 +624,27 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
         cv.strokeRoundRect(b.x + 2.5, b.y + 2.5, b.w - 5, b.h - 5, 10, 1, color.line);
         cv.fillRect(b.x + 4, b.y + 3, b.w - 8, 4, color.accent);
         cv.text('ШИНЫ', b.x + 10, b.y + 16, compact ? 11 : 13, color.muted, { font: 'bold' });
-        cv.text('DEMO', b.x + b.w - 8, b.y + 16, 11, color.muted, { align: 'right', font: 'bold' });
+        // The tyre block is live only when every wheel's pressure came from the car.
+        const wheelVals = WHEEL_IDS.map((id) => demoValue(id));
+        const tempVals = WHEEL_IDS.map((id) => demoValue('t_' + id.slice(2)));
+        const allLive = wheelVals.concat(tempVals).every((v) => v.live);
+        const anyStale = wheelVals.concat(tempVals).some((v) => v.stale);
+        const tagT = staleTag({ live: allLive, stale: anyStale });
+        if (tagT) cv.text(tagT.text, b.x + b.w - 8, b.y + 16, 11, tagT.color, { align: 'right', font: 'bold' });
+        // A wheel with no value shows "--": a missing pressure is not 0 bar.
+        const num = (v, dec) => (v && v.val != null ? fmt(v.val, dec) : '--');
         if (compact) {
             const colW = b.w / 4;
             WHEEL_IDS.forEach((id, i) => {
-                const x = b.x + i * colW, pressure = demoValue(id).val, tempId = 't_' + id.slice(2), temperature = demoValue(tempId).val;
-                cv.text(WHEEL_LABELS[i], x + colW / 2, b.y + 31, 11, color.muted, { align: 'center', font: 'bold' });
-                drawNumberWithUnit(cv, fmt(pressure, DEMO[id].dec), 'бар', x + colW / 2, b.y + 47, 11, color.white, color.white, 9);
-                drawNumberWithUnit(cv, fmt(temperature, DEMO[tempId].dec), '°C', x + colW / 2, b.y + 61, 11, color.muted, color.muted, 9);
+                const x = b.x + i * colW, tempId = 't_' + id.slice(2);
+                // A wheel out of band is marked on its own column: the cause is per-wheel.
+                const dgP = wheelVals[i].live ? dangerOf(id, wheelVals[i].val) : null;
+                const dgT = tempVals[i].live ? dangerOf(tempId, tempVals[i].val) : null;
+                const dgW = dgP || dgT;
+                if (dgW) cv.roundRect(x + 2, b.y + 26, colW - 4, 40, 5, withAlpha(color.crit, 0.22));
+                cv.text(WHEEL_LABELS[i], x + colW / 2, b.y + 31, 11, dgW ? color.crit : color.muted, { align: 'center', font: 'bold' });
+                drawNumberWithUnit(cv, num(wheelVals[i], DEMO[id].dec), 'бар', x + colW / 2, b.y + 47, 11, dgW ? color.crit : color.white, dgW ? color.crit : color.white, 9);
+                drawNumberWithUnit(cv, num(tempVals[i], DEMO[tempId].dec), '°C', x + colW / 2, b.y + 61, 11, dgW ? color.crit : color.muted, dgW ? color.crit : color.muted, 9);
             });
             return;
         }
@@ -509,12 +652,17 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
         const cellW = (b.w - gap * 3) / 2, cellH = (contentH - gap * 3) / 2;
         WHEEL_IDS.forEach((id, i) => {
             const x = b.x + gap + (i % 2) * (cellW + gap), y = top + gap + Math.floor(i / 2) * (cellH + gap);
-            const pressure = demoValue(id).val, tempId = 't_' + id.slice(2), temperature = demoValue(tempId).val;
-            cv.roundRect(x, y, cellW, cellH, 8, color.bg);
-            cv.strokeRoundRect(x + 0.5, y + 0.5, cellW - 1, cellH - 1, 8, 1, color.line);
-            cv.text(WHEEL_LABELS[i], x + 8, y + 15, 12, color.muted, { font: 'bold' });
-            drawNumberWithUnit(cv, fmt(pressure, DEMO[id].dec), 'бар', x + cellW / 2, y + cellH * 0.52, cellH < 60 ? 18 : 23, color.white, color.white, 10);
-            drawNumberWithUnit(cv, fmt(temperature, DEMO[tempId].dec), '°C', x + cellW - 7, y + cellH - 7, 12, color.muted, color.muted, 9, 'right');
+            const tempId = 't_' + id.slice(2);
+            const dgP = wheelVals[i].live ? dangerOf(id, wheelVals[i].val) : null;
+            const dgT = tempVals[i].live ? dangerOf(tempId, tempVals[i].val) : null;
+            const dgW = dgP || dgT;
+            const flashW = dgW ? blinkOn(demoNow()) : false;
+            cv.roundRect(x, y, cellW, cellH, 8, dgW && flashW ? withAlpha(color.crit, 0.22) : color.bg);
+            cv.strokeRoundRect(x + 0.5, y + 0.5, cellW - 1, cellH - 1, 8, dgW ? 2 : 1, dgW ? color.crit : color.line);
+            cv.text(WHEEL_LABELS[i], x + 8, y + 15, 12, dgW ? color.crit : color.muted, { font: 'bold' });
+            if (dgW) cv.text('DANGER', x + cellW - 8, y + 15, 9, color.crit, { align: 'right', font: 'bold' });
+            drawNumberWithUnit(cv, num(wheelVals[i], DEMO[id].dec), 'бар', x + cellW / 2, y + cellH * 0.52, cellH < 60 ? 18 : 23, dgW ? color.crit : color.white, dgW ? color.crit : color.white, 10);
+            drawNumberWithUnit(cv, num(tempVals[i], DEMO[tempId].dec), '°C', x + cellW - 7, y + cellH - 7, 12, dgW ? color.crit : color.muted, dgW ? color.crit : color.muted, 9, 'right');
         });
     }
     function drawCompactTyrePair(cv, b, otherId) {
@@ -523,7 +671,8 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
         drawTyres(cv, b, true);
         const item = M.items[otherId], d = ['track', 'artist', 'map', 'route'].includes(otherId) ? null : DEMO[otherId];
         const name = itemLabel(otherId), unit = d ? (d.unit || item.unit || '') : (item && item.unit || '');
-        const value = d ? fmt(demoValue(otherId).val, d.dec) : '--';
+        const ov = d ? demoValue(otherId) : null;
+        const value = ov && ov.text !== undefined ? ov.text : (ov && ov.val != null ? fmt(ov.val, d.dec) : '--');
         const y = b.y + b.h - 5, left = b.x + 10, right = b.x + b.w - 10;
         const nameSize = 11, valueSize = 13, unitSize = 11, gap = 5;
         const nameWidth = cv.textWidth ? cv.textWidth(name, nameSize, { font: 'bold' }) : name.length * nameSize * 0.6;
@@ -659,29 +808,42 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
     const oldTouch = ctx.display._touch;
     ctx.display._touch = function (phase, x, y) { if (touch(phase, x, y)) return; return oldTouch.call(this, phase, x, y); };
 
-    // ---- Menu tap handling (own path uses cv.target per element) ----
-    function catalogPageSize() { return menuState === 'edit' && selected >= 0 ? 4 : 8; }
-    function catTopOf() { return MY + (menuState === 'edit' && selected >= 0 ? 250 : 90); }
-    function catalogCard(i) { const cardW = (MW - 36) / 2, cardH = 54, gapX = 10, gapY = 8; return { x: MX + 12 + (i % 2) * (cardW + gapX), y: catTopOf() + Math.floor(i / 2) * (cardH + gapY), w: cardW, h: cardH }; }
-    function pageControl(direction) { return { x: MX + 12 + (direction === 'prev' ? 0 : MW - 24 - 104), y: MY + MH - 48, w: 104, h: 34 }; }
+    // ---- Menu geometry: ONE source of truth for drawing and hit-testing ----
+    // Panel is 500 x 504 at (MX, MY). Every control below is derived from these offsets, so a
+    // design change moves the drawn rectangle and its pointer target together.
+    const MNP = { head: 70, pad: 16, chipW: 40, chipH: 30, chipGap: 6, ctlH: 36, ctlGap: 8, delH: 34, cardGapY: 4 };
+    function isEditMenu() { return menuState === 'edit' && selected >= 0; }
+    function chipRect(i) { return { x: MX + MNP.pad + i * (MNP.chipW + MNP.chipGap), y: MY + MNP.head + 28, w: MNP.chipW, h: MNP.chipH }; }
+    function ctlRect(k) { const bw = (MW - MNP.pad * 2 - 8) / 2; return { x: MX + MNP.pad + (k % 2) * (bw + 8), y: MY + MNP.head + 68 + Math.floor(k / 2) * (MNP.ctlH + MNP.ctlGap), w: bw, h: MNP.ctlH }; }
+    function delRect() { const r = ctlRect(2); return { x: MX + MNP.pad, y: r.y + MNP.ctlH + 10, w: MW - MNP.pad * 2, h: MNP.delH }; }
+    // The catalogue fills the band between the controls and the pager: 6 cards while managing a
+    // widget, 12 while adding. The card height is derived from the space actually left, so the
+    // last row always meets the pager instead of leaving a dead band above it.
+    function catalogPageSize() { return isEditMenu() ? 6 : 12; }
+    function catTopOf() { return isEditMenu() ? delRect().y + MNP.delH + 32 : MY + MNP.head + 34; }
+    function catRows() { return Math.ceil(catalogPageSize() / 2); }
+    function cardH() {
+        const pagerTop = MY + MH - 48;
+        const avail = pagerTop - catTopOf() - (catRows() - 1) * MNP.cardGapY;
+        // 48 is the floor: below that a card is two cramped lines instead of one readable row.
+        return Math.max(48, Math.min(58, Math.floor(avail / catRows())));
+    }
+    function catalogCard(i) { const cardW = (MW - MNP.pad * 2 - 8) / 2; return { x: MX + MNP.pad + (i % 2) * (cardW + 8), y: catTopOf() + Math.floor(i / 2) * (cardH() + MNP.cardGapY), w: cardW, h: cardH() }; }
+    function pageControl(direction) { return { x: MX + MNP.pad + (direction === 'prev' ? 0 : MW - MNP.pad * 2 - 104), y: MY + MH - 48, w: 104, h: 34 }; }
+
     // Give every actionable menu region a stable identity. A menu action is committed only
     // when a gesture starts and ends on this exact target; the menu's empty background is inert.
     function menuTargetAt(x, y) {
-        const cbx = MX + MW - 40, cby = MY + 8, cbs = 34;
+        const cbx = MX + MW - 44, cby = MY + 10, cbs = 32;
         if (x >= cbx && x < cbx + cbs && y >= cby && y < cby + cbs) return 'close';
-        if (menuState === 'edit' && selected >= 0) {
+        if (isEditMenu()) {
             const w = data.widgets[selected];
             if (!w) return null;
-            let cx = MX + 12;
-            for (let i = 0; i < w.pages.length; i++, cx += 80) {
-                if (x >= cx && x < cx + 72 && y >= MY + 80 && y < MY + 110) return 'page:' + i;
-            }
-            const bw = (MW - 24) / 2;
-            if (x >= MX + 12 && x < MX + 12 + bw - 4 && y >= MY + 116 && y < MY + 152) return 'control:page';
-            if (x >= MX + 12 + bw && x < MX + 12 + bw + bw - 4 && y >= MY + 116 && y < MY + 152) return 'control:together';
-            if (x >= MX + 12 && x < MX + 12 + bw - 4 && y >= MY + 158 && y < MY + 194) return 'control:order';
-            if (x >= MX + 12 + bw && x < MX + 12 + bw + bw - 4 && y >= MY + 158 && y < MY + 194) return 'control:removeItem';
-            if (x >= MX + 12 && x < MX + MW - 12 && y >= MY + 200 && y < MY + 236) return 'delete';
+            for (let i = 0; i < w.pages.length; i++) { const r = chipRect(i); if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return 'page:' + i; }
+            const keys = ['page', 'together', 'order', 'removeItem'];
+            for (let k = 0; k < keys.length; k++) { const r = ctlRect(k); if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return 'control:' + keys[k]; }
+            const d = delRect();
+            if (x >= d.x && x < d.x + d.w && y >= d.y && y < d.y + d.h) return 'delete';
         }
         const list = menuState === 'select' ? selectFlat : addFlat;
         const pages = Math.max(1, Math.ceil(list.length / catalogPageSize()));
@@ -696,30 +858,27 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
     }
     function handleMenuTap(h) {
         const x = hx, y = hy;
-        const cbx = MX + MW - 40, cby = MY + 8, cbs = 34;
-        if (x >= cbx && x < cbx + cbs && y >= cby && y < cby + cbs) { const hadWidget = menuState === 'edit'; clearMenu(); edit = true; if (!hadWidget) selected = -1; msg = hadWidget ? 'Редактирование: перетащите виджет или удерживайте для меню' : 'Редактирование сетки'; computeLayout(); redraw(); return; }
-        if (menuState === 'edit' && selected >= 0) {
+        const cbx = MX + MW - 44, cby = MY + 10, cbs = 32;
+        if (x >= cbx && x < cbx + cbs && y >= cby && y < cby + cbs) { const hadWidget = isEditMenu(); clearMenu(); edit = true; if (!hadWidget) selected = -1; msg = hadWidget ? 'Редактирование: перетащите виджет или удерживайте для меню' : 'Редактирование сетки'; computeLayout(); redraw(); return; }
+        if (isEditMenu()) {
             const w = data.widgets[selected];
-            const chipW = 72, chipH = 30; let cx = MX + 12;
-            w.pages.forEach((pg, i) => {
-                if (x >= cx && x < cx + chipW && y >= MY + 80 && y < MY + 110) { if (i !== w.active) action('next', { delta: i - w.active }); return; }
-                cx += chipW + 8;
-            });
-            const ctl = [['Страница', 'page'], ['Вместе', 'together'], ['Порядок', 'order'], ['- Пункт', 'removeItem']];
-            const bw = (MW - 24) / 2;
-            for (let k = 0; k < ctl.length; k++) {
-                const bnd = ctl[k];
-                const bx = MX + 12 + (k % 2) * bw;
-                const by = MY + 116 + Math.floor(k / 2) * 42;
-                if (x >= bx && x < bx + bw - 4 && y >= by && y < by + 36) {
-                    if (bnd[1] === 'order') { editPick = null; action(bnd[1]); }
-                    else if (bnd[1] === 'removeItem') removeSelectedItem();
-                    else { editPick = editPick === bnd[1] ? null : bnd[1]; msg = editPick ? 'Выберите показатель в каталоге' : ''; redraw(); }
+            for (let i = 0; i < w.pages.length; i++) {
+                const r = chipRect(i);
+                if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) { if (i !== w.active) action('next', { delta: i - w.active }); return; }
+            }
+            const keys = ['page', 'together', 'order', 'removeItem'];
+            for (let k = 0; k < keys.length; k++) {
+                const r = ctlRect(k);
+                if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+                    const knd = keys[k];
+                    if (knd === 'order') { editPick = null; action(knd); }
+                    else if (knd === 'removeItem') removeSelectedItem();
+                    else { editPick = editPick === knd ? null : knd; msg = editPick ? 'Выберите показатель в каталоге' : ''; redraw(); }
                     return;
                 }
             }
-            const delY = MY + 200;
-            if (x >= MX + 12 && x < MX + MW - 12 && y >= delY && y < delY + 36) { deleteSelected(); return; }
+            const d = delRect();
+            if (x >= d.x && x < d.x + d.w && y >= d.y && y < d.y + d.h) { deleteSelected(); return; }
         }
         // catalog grid
         const cols = 2;
@@ -762,7 +921,7 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
             const label = profile === 'unknown' ? 'Автоподбор · профиль неизвестен' : 'Автоподбор · предположительно ' + (profile === 'diesel' ? 'дизель' : 'бензин');
             cv.roundRect(REC.x, REC.y, REC.w, REC.h, 9, color.selected);
             cv.strokeRoundRect(REC.x + 0.5, REC.y + 0.5, REC.w - 1, REC.h - 1, 9, 1, color.accent);
-            fit(cv, label + ' · DEMO', REC.x + 18, REC.y + 34, 16, REC.w - 36, { color: color.white, font: 'bold' });
+            fit(cv, label, REC.x + 18, REC.y + 34, 16, REC.w - 36, { color: color.white, font: 'bold' });
             fit(cv, 'Нажмите и отпустите, чтобы принять рекомендацию', REC.x + 18, REC.y + 60, 13, REC.w - 36, { color: color.muted });
         }
 
@@ -794,42 +953,61 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
 
         // menu
         if (!readOnly && showMenu) {
-            cv.roundRect(MX, MY, MW, MH, 16, color.bg);
-            cv.strokeRoundRect(MX + 0.5, MY + 0.5, MW - 1, MH - 1, 16, 1.5, color.line);
-            cv.roundRect(MX, MY, MW, 52, 16, color.row);
-            cv.line(MX, MY + 52, MX + MW, MY + 52, 1, color.line);
-            fit(cv, menuState === 'select' ? 'Добавить показатель' : 'Управление виджетом', MX + MW / 2, vmid(MY, 52, 20), 20, MW - 100, { align: 'center', font: 'bold', color: color.white });
-            const _sub = menuState === 'select'
-                ? 'Выберите карточку — добавим в пустую ячейку'
-                : (editPick ? 'Режим: ' + (editPick === 'page' ? 'новый лист' : editPick === 'together' ? 'на текущий лист' : '') + ' — выберите показатель' : 'Свайп по «Стр.» — листы. Сначала действие, затем показатель');
-            fit(cv, _sub, MX + 16, MY + 56, 13, MW - 32, { color: editPick ? color.accent : color.muted });
-            const cbx = MX + MW - 40, cby = MY + 8, cbs = 34;
-            cv.roundRect(cbx, cby, cbs, cbs, 8, color.selected);
-            cv.line(cbx + 10, cby + 10, cbx + cbs - 10, cby + cbs - 10, 2.5, color.white);
-            cv.line(cbx + cbs - 10, cby + 10, cbx + 10, cby + cbs - 10, 2.5, color.white);
+            const editMenu = isEditMenu();
+            // Panel: one surface, one border. The header is a flat band with a hairline, not a
+            // second rounded block, so the panel reads as a single sheet.
+            cv.roundRect(MX, MY, MW, MH, 14, color.bg);
+            cv.strokeRoundRect(MX + 0.5, MY + 0.5, MW - 1, MH - 1, 14, 1.5, color.line);
+            cv.fillRect(MX, MY + MNP.head - 1, MW, 1, color.line);
+
+            // Title block: title on the left, subtitle directly under it — a two-line block
+            // instead of a centred title with a floating subtitle below the header.
+            const title = editMenu ? 'Управление виджетом' : 'Добавить показатель';
+            const cbx = MX + MW - 44, cby = MY + 10, cbs = 32;
+            cv.text(title, MX + MNP.pad, MY + 30, 19, color.white, { font: 'bold' });
+            const sub = editMenu
+                ? (editPick ? (editPick === 'page' ? 'Новый лист · выберите показатель' : 'На текущий лист · выберите показатель') : 'Сначала действие, затем показатель')
+                : 'Выберите показатель для свободной ячейки';
+            cv.text(sub, MX + MNP.pad, MY + 52, 13, editPick ? color.accent : color.muted);
+
+            // Close: quiet outline, not a filled block competing with the title.
+            cv.strokeRoundRect(cbx, cby, cbs, cbs, 8, 1.5, color.line);
+            cv.line(cbx + 11, cby + 11, cbx + cbs - 11, cby + cbs - 11, 2, color.muted);
+            cv.line(cbx + cbs - 11, cby + 11, cbx + 11, cby + cbs - 11, 2, color.muted);
             if (cv.own && interactive) cv.target(cbx, cby, cbs, cbs, function () { clearMenu(); }, 'menu_close', 3);
 
-            if (menuState === 'edit' && selected >= 0) {
+            if (editMenu) {
                 const w = data.widgets[selected];
-                const chipW = 72, chipH = 30; let cx = MX + 12;
+                // Section label sits above the chip row, on its own line: it names the row
+                // without competing with the chips for horizontal space.
+                cv.text('ЛИСТЫ', MX + MNP.pad, MY + MNP.head + 14, 10, color.muted, { font: 'bold', spacing: 1 });
                 w.pages.forEach((pg, i) => {
-                    const py = MY + 80, isSel = i === (w.active || 0);
-                    cv.roundRect(cx, py, chipW, chipH, 7, isSel ? color.accent : color.selected);
-                    fit(cv, 'Стр.' + (i + 1), cx + chipW / 2, vmid(py, 30, 13), 13, chipW - 8, { align: 'center', font: 'bold', color: isSel ? color.bg : color.white });
-                    const _cnt = Math.min(5, (pg && pg.length) || 0);
-                    for (let d = 0; d < _cnt; d++) { const dx = cx + chipW / 2 - (_cnt - 1) * 4 + d * 8; cv.roundRect(dx - 2, py + chipH - 8, 4, 4, 2, isSel ? color.bg : color.accent); }
-                    if (cv.own && interactive) cv.target(cx, py, chipW, chipH, (function (ii) { return function () { const current = data.widgets[selected]; if (current && ii !== current.active) action('next', { delta: ii - current.active }); }; })(i), 'pchip_' + i, 2);
-                    cx += chipW + 8;
+                    const r = chipRect(i), isSel = i === (w.active || 0);
+                    if (isSel) {
+                        cv.roundRect(r.x, r.y, r.w, r.h, 6, color.accent);
+                    } else {
+                        cv.strokeRoundRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 6, 1.5, color.line);
+                    }
+                    cv.text(String(i + 1), r.x + r.w / 2, vmid(r.y, r.h, 15), 15,
+                        isSel ? color.bg : color.white, { align: 'center', font: 'bold' });
+                    if (cv.own && interactive) cv.target(r.x, r.y, r.w, r.h, (function (ii) {
+                        return function () { const current = data.widgets[selected]; if (current && ii !== current.active) action('next', { delta: ii - current.active }); };
+                    })(i), 'pchip_' + i, 2);
                 });
+                // Page count as a quiet trailing note, right-aligned on the chip row.
+                const count = w.pages.length + ' из 4';
+                cv.text(count, MX + MW - MNP.pad, MY + MNP.head + 47, 12, color.muted, { align: 'right' });
+
+                // Actions: outlined rows. Only the pending pick is filled, so the current mode
+                // is visible without reading the subtitle.
                 const ctl = [['Страница', 'page'], ['Вместе', 'together'], ['Порядок', 'order'], ['- Пункт', 'removeItem']];
-                const bw = (MW - 24) / 2;
                 ctl.forEach((bnd, k) => {
-                    const bx = MX + 12 + (k % 2) * bw;
-                    const by = MY + 116 + Math.floor(k / 2) * 42;
-                    cv.roundRect(bx, by, bw - 4, 36, 7, editPick === bnd[1] ? color.accent : color.selected);
-                    const ic = editPick === bnd[1] ? color.bg : color.white;
-                    // small drawn icon (crisp at any size): page(+), together(two squares), order(lines), remove(minus)
-                    const ix = bx + 18, iy = by + 18;
+                    const r = ctlRect(k);
+                    const on = editPick === bnd[1];
+                    if (on) cv.roundRect(r.x, r.y, r.w, r.h, 7, color.accent);
+                    else { cv.roundRect(r.x, r.y, r.w, r.h, 7, color.row); cv.strokeRoundRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 7, 1.5, color.line); }
+                    const ic = on ? color.bg : color.white;
+                    const ix = r.x + 17, iy = r.y + r.h / 2;
                     if (bnd[1] === 'page') {
                         cv.strokeRoundRect(ix - 6, iy - 7, 12, 14, 2, 1.5, ic);
                         cv.line(ix, iy - 1, ix, iy + 5, 1.5, ic); cv.line(ix - 3, iy + 2, ix + 3, iy + 2, 1.5, ic);
@@ -842,50 +1020,60 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
                     } else {
                         cv.line(ix - 6, iy, ix + 6, iy, 2, ic);
                     }
-                    fit(cv, bnd[0], bx + (bw - 4) / 2 + 6, vmid(by, 36, 12), 12, bw - 20, { align: 'center', font: 'bold', color: editPick === bnd[1] ? color.bg : color.white });
-                    if (cv.own && interactive) cv.target(bx, by, bw - 4, 36, (function (knd) {
+                    fit(cv, bnd[0], ix + 16, vmid(r.y, r.h, 13), 13, r.w - 44, { font: 'bold', color: on ? color.bg : color.white });
+                    if (cv.own && interactive) cv.target(r.x, r.y, r.w, r.h, (function (knd) {
                         return function () {
                             if (knd === 'order') { editPick = null; action(knd); }
                             else if (knd === 'removeItem') removeSelectedItem();
                             else { editPick = editPick === knd ? null : knd; msg = editPick ? 'Выберите показатель в каталоге' : ''; redraw(); }
                         };
                     })(bnd[1]), 'ctl_' + bnd[1], 2);
-                    });
-                const delY = MY + 200;
-                cv.roundRect(MX + 12, delY, MW - 24, 36, 7, '#d32f2f');
-                fit(cv, 'Удалить виджет', MX + MW / 2, vmid(delY, 36, 13), 13, MW - 40, { align: 'center', font: 'bold', color: color.white });
-                if (cv.own && interactive) cv.target(MX + 12, delY, MW - 24, 36, deleteSelected, 'menu_del', 3);
+                });
+
+                // Destructive action: quiet outline with a red label and icon. A full-width
+                // saturated red bar outweighed every real action in the panel.
+                const d = delRect();
+                cv.strokeRoundRect(d.x + 0.5, d.y + 0.5, d.w - 1, d.h - 1, 7, 1.5, withAlpha('#d65051', 0.55));
+                cv.line(d.x + 14, d.y + d.h / 2, d.x + 26, d.y + d.h / 2, 2, '#d65051');
+                fit(cv, 'Удалить виджет', d.x + 36, vmid(d.y, d.h, 13), 13, d.w - 60, { font: 'bold', color: '#d65051' });
+                if (cv.own && interactive) cv.target(d.x, d.y, d.w, d.h, deleteSelected, 'menu_del', 3);
             }
-            cv.text('ПОКАЗАТЕЛИ', MX + 16, catTopOf() - 6, 10, color.muted, { font: 'bold' });
+
+            // Catalogue: cards are ONE line — name left, unit right, on a single baseline. No
+            // category colour rule and no per-card category stamp: six colours had no legend and
+            // repeating one word twelve times is noise. The names describe themselves.
+            const catLabel = editMenu ? (editPick ? 'ВЫБЕРИТЕ ПОКАЗАТЕЛЬ' : 'ПОКАЗАТЕЛИ') : 'КАТАЛОГ';
+            cv.text(catLabel, MX + MNP.pad, catTopOf() - 10, 10, editPick ? color.accent : color.muted, { font: 'bold', spacing: 1 });
             for (let i = 0; i < catalogPageSize(); i++) {
                 const idx = menuPage * catalogPageSize() + i; if (idx >= list.length) break;
                 const item = list[idx];
-                const card = catalogCard(i); const px = card.x, py = card.y, pillW = card.w, pillH = card.h;
-                const cat = menuState === 'select' ? groupedCategories.find(g => g.items.indexOf(item.id) >= 0) : null;
-                cv.roundRect(px, py, pillW, pillH, 9, color.selected);
-                if (cat) cv.fillRect(px + 5, py + 6, 4, pillH - 12, cat.color);
-                fit(cv, item.name, px + 18, py + 22, 15, pillW - 30, { font: 'bold' });
-                if (item.unit) fit(cv, item.unit, px + 18, py + 40, 12, pillW - 30, { color: color.muted });
-                if (cv.own && interactive) cv.target(px, py, pillW, pillH, (function (it) { return function () { onCatalogTap(it); }; })(item), 'cat_' + menuState + '_' + idx, 2);
+                const card = catalogCard(i);
+                const base = vmid(card.y, card.h, 15);
+                cv.roundRect(card.x, card.y, card.w, card.h, 8, color.row);
+                cv.strokeRoundRect(card.x + 0.5, card.y + 0.5, card.w - 1, card.h - 1, 8, 1.5, color.line);
+                const tx = card.x + 13;
+                const unitW = item.unit ? cv.textWidth(item.unit, 12) + 12 : 0;
+                fit(cv, item.name, tx, base, 15, card.w - (tx - card.x) - unitW - 10, { font: 'bold' });
+                if (item.unit) cv.text(item.unit, card.x + card.w - 11, base, 12, color.muted, { align: 'right' });
+                if (cv.own && interactive) cv.target(card.x, card.y, card.w, card.h, (function (it) { return function () { onCatalogTap(it); }; })(item), 'cat_' + menuState + '_' + idx, 2);
             }
+
+            // Pager: chevrons only, page counter centred. Labels "Назад/Далее" repeated what the
+            // arrows already say and cost 60px of the row.
             const prev = pageControl('prev'), next = pageControl('next');
             const pmy = prev.y + prev.h / 2, nmy = next.y + next.h / 2;
-            cv.roundRect(prev.x, prev.y, prev.w, prev.h, 8, menuPage > 0 ? color.selected : color.row);
-            const pc = menuPage > 0 ? color.white : color.muted;
-            cv.line(prev.x + 23, pmy - 6, prev.x + 17, pmy, 2.5, pc); cv.line(prev.x + 17, pmy, prev.x + 23, pmy + 6, 2.5, pc);
-            cv.text('Назад', prev.x + 34, pmy + 5, 13, pc, { font: 'bold' });
-            if (cv.own && interactive && menuPage > 0) cv.target(prev.x, prev.y, prev.w, prev.h, function () { menuPage = Math.max(0, menuPage - 1); redraw(); }, 'pg_up', 3);
-            fit(cv, (menuPage + 1) + ' / ' + pages, MX + MW / 2, prev.y + 10, 14, 88, { align:'center', font:'bold', color:color.white });
-            cv.roundRect(next.x, next.y, next.w, next.h, 8, menuPage < pages - 1 ? color.selected : color.row);
-            const nc = menuPage < pages - 1 ? color.white : color.muted;
-            cv.text('Далее', next.x + next.w - 34, nmy + 5, 13, nc, { font: 'bold', align: 'right' });
-            cv.line(next.x + next.w - 23, nmy - 6, next.x + next.w - 17, nmy, 2.5, nc); cv.line(next.x + next.w - 17, nmy, next.x + next.w - 23, nmy + 6, 2.5, nc);
-            if (cv.own && interactive && menuPage < pages - 1) cv.target(next.x, next.y, next.w, next.h, function () { menuPage = Math.min(pages - 1, menuPage + 1); redraw(); }, 'pg_dn', 3);
-            // contextual help fills the free band above pagination (add and edit menus)
-            const helpY = prev.y - 60;
-            cv.text('Подсказка', MX + 16, helpY, 11, color.muted, { font: 'bold' });
-            fit(cv, 'Удержание по виджету открывает это меню. Плитка каталога добавляет показатель.', MX + 16, helpY + 16, 11, MW - 30, { color: color.muted });
-            fit(cv, 'Стр. N — переключить лист. «- Пункт» убирает последний показатель.', MX + 16, helpY + 32, 11, MW - 30, { color: color.muted });
+            const hasPrev = menuPage > 0, hasNext = menuPage < pages - 1;
+            if (hasPrev) { cv.roundRect(prev.x, prev.y, prev.w, prev.h, 8, color.row); cv.strokeRoundRect(prev.x + 0.5, prev.y + 0.5, prev.w - 1, prev.h - 1, 8, 1.5, color.line); }
+            const pc = hasPrev ? color.white : withAlpha(color.muted, 0.4);
+            cv.line(prev.x + 24, pmy - 6, prev.x + 18, pmy, 2.5, pc); cv.line(prev.x + 18, pmy, prev.x + 24, pmy + 6, 2.5, pc);
+            cv.text('Назад', prev.x + 34, vmid(prev.y, prev.h, 13), 13, pc, { font: 'bold' });
+            if (cv.own && interactive && hasPrev) cv.target(prev.x, prev.y, prev.w, prev.h, function () { menuPage = Math.max(0, menuPage - 1); redraw(); }, 'pg_up', 3);
+            cv.text((menuPage + 1) + ' / ' + pages, MX + MW / 2, vmid(prev.y, prev.h, 13), 13, color.muted, { align: 'center', font: 'bold' });
+            if (hasNext) { cv.roundRect(next.x, next.y, next.w, next.h, 8, color.row); cv.strokeRoundRect(next.x + 0.5, next.y + 0.5, next.w - 1, next.h - 1, 8, 1.5, color.line); }
+            const nc = hasNext ? color.white : withAlpha(color.muted, 0.4);
+            cv.text('Далее', next.x + next.w - 34, vmid(next.y, next.h, 13), 13, nc, { font: 'bold', align: 'right' });
+            cv.line(next.x + next.w - 24, nmy - 6, next.x + next.w - 18, nmy, 2.5, nc); cv.line(next.x + next.w - 18, nmy, next.x + next.w - 24, nmy + 6, 2.5, nc);
+            if (cv.own && interactive && hasNext) cv.target(next.x, next.y, next.w, next.h, function () { menuPage = Math.min(pages - 1, menuPage + 1); redraw(); }, 'pg_dn', 3);
         }
 
         // Single status line at the very bottom (rejections in red). No persistent toolbar/help clutter.
@@ -903,3 +1091,8 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
     }
     return { draw: draw };
 };
+// The danger bands are part of the app's data contract, not a drawing detail: the centre screen
+// uses the same ones, so a value that flashes red in one place never looks calm in the other.
+module.exports.dangerOf = dangerOf;
+module.exports.blinkOn = blinkOn;
+module.exports.DANGER = DANGER;

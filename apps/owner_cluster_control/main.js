@@ -4,6 +4,7 @@ const mgu = require('./kit/mgu');
 const G = require('./kit/gauges');
 const makeEditor = require('./editor');
 const vehicleDetector = require('./vehicle-detector');
+const liveSignals = require('./signals');
 
 // This screen is an offline study; none of its data comes from a vehicle.
 mgu.run({
@@ -23,6 +24,7 @@ mgu.run({
             ['map', 'Карта CarPlay', 'Источник карты не подключён']
         ];
         const color = { bg: '#080f1b', row: '#101d30', selected: '#162b43', card: '#0c1829', white: '#e9f2ff', muted: '#9fb2c8', quiet: '#70849d', line: '#243c59', accent: '#42a5f5', blue: '#4ea5ff', crit: '#d65051', warn: '#d6a33c', cold: '#4f9bc8' };
+        const live = new liveSignals.Signals(ctx);
 
         function acceptVehicleEvent(value, observedAt) {
             const now = Date.now();
@@ -94,7 +96,18 @@ mgu.run({
             }
             cv.text(str, x, y, size, options.color || color.white, options);
         }
-        function tyre(cv, x, y, position, pressure, temp) {
+        // Every widget reads the car. A value the car has not sent shows "--", never a stand-in.
+        const num = (v, dec) => (v && v.valid && typeof v.n === 'number' ? v.n.toFixed(dec || 0) : '--');
+        // Same danger bands the composition editor uses, so the two screens never disagree.
+        // A host that stubs the editor module (tests, previews) simply gets no danger marking.
+        const dangerOf = typeof makeEditor.dangerOf === 'function' ? makeEditor.dangerOf : function () { return null; };
+        const blinkOn = typeof makeEditor.blinkOn === 'function' ? makeEditor.blinkOn : function () { return true; };
+        const withAlpha = function (c, a) {
+            const s = String(c).replace('#', '');
+            return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16), Math.round(a * 255)];
+        };
+        const word = (v) => (v && v.valid ? (v.text !== undefined ? v.text : String(v.n)) : '--');
+        function tyre(cv, x, y, position, pId, tId) {
             cv.roundRect(x, y, 190, 102, 4, color.card);
             cv.roundRect(x + 12, y + 12, 30, 34, 3, '#152842');
             cv.fillRect(x + 18, y + 18, 18, 3, color.line);
@@ -102,10 +115,19 @@ mgu.run({
             cv.fillRect(x + 18, y + 34, 18, 3, color.line);
             cv.text(position, x + 52, y + 28, 18, color.muted, { font: 'bold' });
             cv.fillRect(x + 12, y + 55, 166, 1, color.line);
-            cv.text(pressure, x + 14, y + 83, 34, color.white, { font: 'cluster-m' });
-            cv.text('bar', x + 69, y + 81, 17, color.muted, { font: 'bold' });
-            cv.text(temp + ' °C', x + 174, y + 81, 22, color.blue, { align: 'right', font: 'cluster-m' });
-            cv.fillRect(x + 14, y + 91, 34, 3, color.blue);
+            const p = live.read(pId), t = live.read(tId);
+            const dgP = p && p.valid ? dangerOf(pId, p.n) : null;
+            const dgT = t && t.valid ? dangerOf(tId, t.n) : null;
+            const dg = dgP || dgT;
+            if (dg) {
+                cv.strokeRoundRect(x + 0.5, y + 0.5, 189, 101, 4, 2, color.crit);
+                if (blinkOn()) cv.roundRect(x + 2, y + 2, 186, 98, 3, withAlpha(color.crit, 0.18));
+                cv.text('DANGER', x + 174, y + 28, 13, color.crit, { align: 'right', font: 'bold' });
+            }
+            cv.text(num(p, 1), x + 14, y + 83, 34, dg ? color.crit : color.white, { font: 'cluster-m' });
+            cv.text('bar', x + 69, y + 81, 17, dg ? color.crit : color.muted, { font: 'bold' });
+            cv.text((num(t, 0) === '--' ? '--' : num(t, 0)) + ' °C', x + 174, y + 81, 22, dg ? color.crit : color.blue, { align: 'right', font: 'cluster-m' });
+            if (p && p.valid) cv.fillRect(x + 14, y + 91, 34, 3, dg ? color.crit : p.stale ? color.warn : color.blue);
         }
         function title(cv, text) {
             fit(cv, text, 1060, 162, 20, 290, { align: 'center', font: 'bold', color: color.muted });
@@ -114,26 +136,33 @@ mgu.run({
         function renderWidget(cv, current) {
             if (current === 'tyres') {
                 title(cv, 'ДАВЛЕНИЕ И ТЕМПЕРАТУРА');
-                tyre(cv, 850, 190, 'FL', '2.4', '32');
-                tyre(cv, 1080, 190, 'FR', '2.4', '33');
-                tyre(cv, 850, 310, 'RL', '2.5', '31');
-                tyre(cv, 1080, 310, 'RR', '2.5', '32');
+                tyre(cv, 850, 190, 'FL', 'p_fl', 't_fl');
+                tyre(cv, 1080, 190, 'FR', 'p_fr', 't_fr');
+                tyre(cv, 850, 310, 'RL', 'p_rl', 't_rl');
+                tyre(cv, 1080, 310, 'RR', 'p_rr', 't_rr');
             } else if (current === 'engine') {
                 title(cv, 'ТЕМПЕРАТУРА ДВИГАТЕЛЯ');
+                const c = live.read('coolant'), o = live.read('oil');
                 cv.fillRect(1059, 202, 2, 153, color.line);
                 cv.text('ОХЛАЖДЕНИЕ', 968, 225, 19, color.muted, { align: 'center', font: 'bold' });
                 cv.text('МАСЛО', 1152, 225, 19, color.muted, { align: 'center', font: 'bold' });
-                cv.text('108', 986, 301, 64, color.white, { align: 'right', font: 'cluster-m' });
-                cv.text('112', 1170, 301, 64, color.white, { align: 'right', font: 'cluster-m' });
-                cv.text('°C', 994, 301, 22, color.blue);
-                cv.text('°C', 1178, 301, 22, color.blue);
-                cv.fillRect(968, 329, 36, 4, color.blue);
-                cv.fillRect(1152, 329, 36, 4, color.blue);
+                const dgC = c.valid ? dangerOf('coolant', c.n) : null, dgO = o.valid ? dangerOf('oil', o.n) : null;
+                cv.text(num(c, 0), 986, 301, 64, dgC ? color.crit : color.white, { align: 'right', font: 'cluster-m' });
+                cv.text(num(o, 0), 1170, 301, 64, dgO ? color.crit : color.white, { align: 'right', font: 'cluster-m' });
+                cv.text('°C', 994, 301, 22, dgC ? color.crit : color.blue);
+                cv.text('°C', 1178, 301, 22, dgO ? color.crit : color.blue);
+                cv.fillRect(968, 329, 36, 4, dgC ? color.crit : color.blue);
+                cv.fillRect(1152, 329, 36, 4, dgO ? color.crit : color.blue);
+                if (dgC) cv.text(blinkOn() ? 'DANGER' : dgC.label, 968, 366, 15, color.crit, { align: 'center', font: 'bold' });
+                if (dgO) cv.text(blinkOn() ? 'DANGER' : dgO.label, 1152, 366, 15, color.crit, { align: 'center', font: 'bold' });
             } else if (current === 'acceleration') {
                 title(cv, 'РАЗГОН 0–100 КМ/Ч');
-                cv.text('--.--', 1060, 275, 74, color.white, { align: 'center', font: 'cluster-m' });
-                cv.text('СИГНАЛ СКОРОСТИ', 1060, 319, 19, color.muted, { align: 'center', font: 'bold' });
-                cv.text('не подключён', 1060, 344, 20, color.muted, { align: 'center' });
+                const a = live.accel100();
+                const shown = a.running !== null ? a.running.toFixed(2) : a.best !== null ? a.best.toFixed(2) : '--.--';
+                cv.text(shown, 1060, 275, 74, color.white, { align: 'center', font: 'cluster-m' });
+                cv.text(a.running !== null ? 'ИДЁТ ЗАМЕР' : a.best !== null ? 'ЛУЧШИЙ РЕЗУЛЬТАТ' : 'НЕТ ЗАМЕРА', 1060, 319, 19, color.muted, { align: 'center', font: 'bold' });
+                const sp = live.read('speed');
+                cv.text(sp.valid ? 'скорость ' + num(sp, 0) + ' км/ч' : 'сигнал скорости недоступен', 1060, 344, 20, color.muted, { align: 'center' });
             } else if (current === 'music') {
                 title(cv, 'СЕЙЧАС ИГРАЕТ');
                 cv.line(1025, 216, 1025, 253, 3, color.muted);
@@ -200,7 +229,10 @@ mgu.run({
         function render() {
             const t = ctx.theme(), current = ctx.settings.get('centre');
             const cv = ctx.canvas(1600, 520).clear(color.bg);
-            G.frame(cv, t, ['Cluster', 'Композиция'], page, [{ text: 'DEMO' }]);
+            // The header badge states the data source once for the whole screen. No car answer
+            // means no badge at all: a permanent DEMO label on live-capable widgets was noise.
+            const srcBadge = live.status().live ? null : { text: 'НЕТ ДАННЫХ' };
+            G.frame(cv, t, ['Cluster', 'Композиция'], page, srcBadge ? [srcBadge] : []);
             if (page === 1) {
                 editor.draw(cv);
                 return ctx.ui.image('MAIN_GFX', cv);
@@ -228,10 +260,11 @@ mgu.run({
             cv.line(1369, 116, 1359, 126, 3, '#30669a');
             cv.line(1384, 116, 1374, 126, 3, '#d65051');
             renderWidget(cv, current);
-            cv.text(current === 'tyres' || current === 'engine' ? 'Демонстрационные значения. Приборка не подключена.' : 'Вывод на приборку пока не подключён.', 684, 468, 18, color.muted);
+            const srcStatus = live.status();
+            cv.text(srcStatus.live ? 'Значения с автомобиля' : 'Нет данных от автомобиля — показания недоступны', 684, 468, 18, srcStatus.live ? color.muted : color.warn);
             return ctx.ui.image('MAIN_GFX', cv);
         }
-        editor = makeEditor(ctx, fit, color, render, function () { return page === 1; }, function () { return vehicleStatus().recommendationProfile; });
+        editor = makeEditor(ctx, fit, color, render, function () { return page === 1; }, function () { return vehicleStatus().recommendationProfile; }, undefined, live);
         watchVehicleType();
         if (ctx.onTab) ctx.onTab(function (i) { if (i === 0 || i === 1) { page = i; render(); } });
         ctx.loop('MAIN', 4, render);
