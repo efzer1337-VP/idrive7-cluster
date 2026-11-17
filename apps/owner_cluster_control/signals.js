@@ -91,6 +91,12 @@ const SRC = {
     t_fr: { i: TPMS, f: 'statusTyreTemperature', m: 'actualValueTemperatureTyreFRH', o: -40, bad: [65535], lim: [-40, 150], d: 0, wheel: 1 },
     t_rl: { i: TPMS, f: 'statusTyreTemperature', m: 'actualValueTemperatureTyreRLH', o: -40, bad: [65535], lim: [-40, 150], d: 0, wheel: 2 },
     t_rr: { i: TPMS, f: 'statusTyreTemperature', m: 'actualValueTemperatureTyreRRH', o: -40, bad: [65535], lim: [-40, 150], d: 0, wheel: 3 },
+    // Target pressures: not offered as widgets of their own, they give the four-wheel widget its
+    // frame of reference - "how far from where it should be" is what a driver acts on.
+    tp_fl: { i: TPMS, f: 'statusTargetTyrePressure', m: 'targetPressureTyreFLH', k: 0.1, max: 65532, d: 1 },
+    tp_fr: { i: TPMS, f: 'statusTargetTyrePressure', m: 'targetPressureTyreFRH', k: 0.1, max: 65532, d: 1 },
+    tp_rl: { i: TPMS, f: 'statusTargetTyrePressure', m: 'targetPressureTyreRLH', k: 0.1, max: 65532, d: 1 },
+    tp_rr: { i: TPMS, f: 'statusTargetTyrePressure', m: 'targetPressureTyreRRH', k: 0.1, max: 65532, d: 1 },
 
     // ---- driving ----
     speed: { i: V2, f: 'statusCarSpeed2', m: 'speedVehicleCentreOfGravity', k: 0.015625, bad: [65535], d: 0 },

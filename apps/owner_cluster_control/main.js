@@ -127,11 +127,10 @@ mgu.run({
             cv.text(num(p, 1), x + 14, y + 83, 34, dg ? color.crit : color.white, { font: 'cluster-m' });
             cv.text('bar', x + 69, y + 81, 17, dg ? color.crit : color.muted, { font: 'bold' });
             cv.text((num(t, 0) === '--' ? '--' : num(t, 0)) + ' °C', x + 174, y + 81, 22, dg ? color.crit : color.blue, { align: 'right', font: 'cluster-m' });
-            if (p && p.valid) cv.fillRect(x + 14, y + 91, 34, 3, dg ? color.crit : p.stale ? color.warn : color.blue);
+
         }
         function title(cv, text) {
             fit(cv, text, 1060, 162, 20, 290, { align: 'center', font: 'bold', color: color.muted });
-            cv.fillRect(1032, 174, 56, 2, color.blue);
         }
         function renderWidget(cv, current) {
             if (current === 'tyres') {
@@ -151,8 +150,7 @@ mgu.run({
                 cv.text(num(o, 0), 1170, 301, 64, dgO ? color.crit : color.white, { align: 'right', font: 'cluster-m' });
                 cv.text('°C', 994, 301, 22, dgC ? color.crit : color.blue);
                 cv.text('°C', 1178, 301, 22, dgO ? color.crit : color.blue);
-                cv.fillRect(968, 329, 36, 4, dgC ? color.crit : color.blue);
-                cv.fillRect(1152, 329, 36, 4, dgO ? color.crit : color.blue);
+
                 if (dgC) cv.text(blinkOn() ? 'DANGER' : dgC.label, 968, 366, 15, color.crit, { align: 'center', font: 'bold' });
                 if (dgO) cv.text(blinkOn() ? 'DANGER' : dgO.label, 1152, 366, 15, color.crit, { align: 'center', font: 'bold' });
             } else if (current === 'acceleration') {
