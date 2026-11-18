@@ -2,7 +2,7 @@
   "id": "owner_cluster_control",
   "title": "Cluster",
   "description": "Кастомная приборка: центральная область с виджетами (шины, двигатель, 0–100, музыка, карта) и редактором композиции",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "vendor": "owner",
   "loggingId": "OCLP",
   "mguHmi": ["ID7"],

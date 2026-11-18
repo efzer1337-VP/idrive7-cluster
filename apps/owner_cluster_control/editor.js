@@ -797,15 +797,18 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
                 if (w.dg) cv.roundRect(b.x + i * colW + 3, b.y + 23, colW - 6, b.h - 29, 5, withAlpha(color.crit, 0.16));
                 const cL = b.x + i * colW + 8, cR = b.x + (i + 1) * colW - 8;
                 // The 1x1 is the only size without the pictogram: its column cannot hold a tyre
-                // and a label without crowding both. Every wider size gets it.
+                // and a label without crowding both. Every wider size gets it, on the RIGHT of the
+                // column and large enough to work as the corner's marker.
                 if (colW >= 160) {
-                    tyreGlyph(cv, cL, b.y + 25, 13, 17, w.dg ? color.crit : color.muted);
-                    cv.text(WHEEL_LABELS[i], cL + 18, b.y + 37, 10, w.dg ? color.crit : color.muted, { font: 'bold' });
+                    const gH = Math.max(22, Math.min(34, Math.round(b.h * 0.34)));
+                    const gW = Math.round(gH * 0.78);
+                    tyreGlyph(cv, cR - gW, b.y + 24, gW, gH, w.dg ? color.crit : color.muted);
+                    cv.text(WHEEL_LABELS[i], cL, b.y + 36, 10, w.dg ? color.crit : color.muted, { font: 'bold' });
                 } else {
                     cv.text(WHEEL_LABELS[i], cL, b.y + 34, 10, w.dg ? color.crit : color.muted, { font: 'bold' });
                 }
                 const tC = num(w.t, 0);
-                cv.text(tC === '--' ? '--' : tC + '°C', cR, b.y + 34, 9, w.dg ? color.crit : color.muted, { align: 'right' });
+                cv.text(tC === '--' ? '--' : tC + '°C', cL, b.y + 48, 9, w.dg ? color.crit : color.muted);
                 // Deviation under the label, pressure under it. ASCII '-' because the monospace
                 // digit atlas has no U+2212: a typographic minus renders as nothing at all.
                 const inSpecC = w.delta !== null && Math.abs(w.delta) < 0.05;
@@ -839,13 +842,18 @@ module.exports = function (ctx, fit, color, redraw, isActive, vehicleProfile, de
             if (w.dg) cv.roundRect(inner.x - 6, inner.y, inner.w + 8, inner.h, 7, flash ? withAlpha(color.crit, 0.18) : withAlpha(color.crit, 0.07));
             const tint = w.dg ? color.crit : off ? color.warn : color.white;
 
-            // Row 1: tyre pictogram + corner label on the left, temperature on the right. The
-            // pictogram is tinted by this wheel's state, so a bad corner is identified by shape
-            // before any number is read.
-            tyreGlyph(cv, inner.x, y + 8, 14, 18, w.dg ? color.crit : color.muted);
-            cv.text(WHEEL_LABELS[i], inner.x + 20, y + 21, 10, w.dg ? color.crit : color.muted, { font: 'bold', spacing: 0.6 });
+            // Row 1: corner label + temperature on the left, the tyre pictogram on the RIGHT and
+            // large, because the pictogram is how a driver finds the corner at a glance - it is a
+            // marker, not a footnote. Tinted by this wheel's state, so a bad corner is identified
+            // by shape before any number is read.
             const tStr = num(w.t, 0);
-            cv.text(tStr === '--' ? '--' : tStr + '°C', inner.x + inner.w, y + 20, 10, w.dg ? color.crit : color.muted, { align: 'right' });
+            cv.text(WHEEL_LABELS[i], inner.x, y + 21, 10, w.dg ? color.crit : color.muted, { font: 'bold', spacing: 0.6 });
+            cv.text(tStr === '--' ? '--' : tStr + '°C', inner.x + 22, y + 21, 10, w.dg ? color.crit : color.muted);
+            // Sized off the cell so it scales with the widget, and kept square-ish: a tyre is taller
+            // than it is wide.
+            const gH = Math.max(24, Math.min(46, Math.round(cellH * 0.46)));
+            const gW = Math.round(gH * 0.78);
+            tyreGlyph(cv, inner.x + inner.w - gW, y + 6, gW, gH, w.dg ? color.crit : color.muted);
 
             // Row 2: the deviation, large. This is the widget's answer to "is anything wrong".
             const big = Math.max(22, Math.min(32, Math.round(cellH * 0.32)));
